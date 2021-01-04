@@ -1,0 +1,7 @@
+#compile:
+gcc -lsdl2 sdl.c -o sdl
+gcc -lsdl2 -lsdl2_image image.c -o image
+
+
+#SDL book:
+http://wiki.libsdl.org/Support#Books

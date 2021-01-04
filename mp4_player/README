@@ -1,0 +1,1 @@
+gcc videoplay.c -lavutil -lavdevice -lavfilter -lavformat -lavcodec -lpostproc -lswresample -lswscale -lbz2 -lfdk-aac -lz -liconv -lmp3lame -llzma -lopus -ltheora -lvorbis -lvorbisenc -lvpx -lx264 -lx265 -lxvidcore -lsdl2 -framework CoreFoundation -framework AudioToolbox -framework CoreMedia -framework CoreVideo -framework Security -framework VideoToolbox -o videoplay
