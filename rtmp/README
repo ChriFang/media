@@ -1,0 +1,1 @@
+g++ -lrtmp publish.cpp -o publish
