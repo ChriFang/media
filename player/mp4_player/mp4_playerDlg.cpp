@@ -54,6 +54,7 @@ Cmp4_playerDlg::Cmp4_playerDlg(CWnd* pParent /*=NULL*/)
 	, m_strPlayUrl(_T(""))
 	, m_frameRGB(NULL)
 	, m_imgCtx(NULL)
+	, m_audioSwrCtx(NULL)
 {
 	m_hIcon = AfxGetApp()->LoadIcon(IDR_MAINFRAME);
 }
@@ -203,6 +204,12 @@ void Cmp4_playerDlg::resetDecoder()
 		m_picBuf = NULL;
 	}
 
+	if (m_audioSwrCtx)
+	{
+		swr_free(&m_audioSwrCtx);
+		m_audioSwrCtx = NULL;
+	}
+
 	m_vstream_index = 0;
 	m_astream_index = 0;
 }
@@ -212,12 +219,24 @@ void Cmp4_playerDlg::initRender()
 	m_canvasWidth = 0;
 	m_canvasHeight = 0;
 
+	m_firstPlayAudio = true;
+
 	m_DrawDib = DrawDibOpen();
+
+	if (SDL_Init(SDL_INIT_AUDIO | SDL_INIT_TIMER)) 
+	{
+		TRACE("Could not initialize SDL - %s\n", SDL_GetError());
+	}
 }
 
 void Cmp4_playerDlg::deInitRender()
 {
+	m_firstPlayAudio = true;
 	DrawDibClose(m_DrawDib);
+	SDL_Quit();
+#ifdef USE_WAVE
+	closeWavePlayer();
+#endif
 }
 
 unsigned __stdcall Cmp4_playerDlg::DemuxerProc(void *pVoid)
@@ -238,6 +257,7 @@ void Cmp4_playerDlg::DemuxerWorker()
 {
 	int ret;
 	bool isBufferFull;
+	const int maxDecodedListSize = 100; // 解码队列中的音视频帧最大个数
 	AVPacket pkt1, *pkt = &pkt1;
 	while (av_read_frame(m_fmtCtx, pkt) >= 0)
 	{
@@ -245,18 +265,43 @@ void Cmp4_playerDlg::DemuxerWorker()
 		// 视频
 		if (pkt->stream_index == m_vstream_index)
 		{
-			if (avcodec_send_packet(m_codecCtx, pkt) == AVERROR(EAGAIN))
+			if (avcodec_send_packet(m_vCodecCtx, pkt) == AVERROR(EAGAIN))
 			{
-				TRACE("avcodec_send_packet failed\n");
+				TRACE("[video] avcodec_send_packet failed\n");
 			}
 			AVFrame *frame = av_frame_alloc();
-			ret = avcodec_receive_frame(m_codecCtx, frame);
+			ret = avcodec_receive_frame(m_vCodecCtx, frame);
 			if (ret >= 0)
 			{
-				TRACE("receive one video frame\n");
-				std::lock_guard<std::mutex> lock(m_vdListMtx);
+				TRACE("[video] receive one video frame\n");
+				std::lock_guard<std::mutex> lock(m_dListMtx);
 				m_vdFrameList.push_back(frame);
-				if (m_vdFrameList.size() > 100)
+				if (m_vdFrameList.size() > maxDecodedListSize 
+					&& m_adFrameList.size() > maxDecodedListSize)
+				{
+					isBufferFull = true;
+				}
+			}
+			else
+			{
+				av_frame_free(&frame);
+			}
+		}
+		else if (pkt->stream_index == m_astream_index)
+		{
+			if (avcodec_send_packet(m_aCodecCtx, pkt) == AVERROR(EAGAIN))
+			{
+				TRACE("[audio] avcodec_send_packet failed\n");
+			}
+			AVFrame *frame = av_frame_alloc();
+			ret = avcodec_receive_frame(m_aCodecCtx, frame);
+			if (ret >= 0)
+			{
+				TRACE("[audio] receive one audio frame\n");
+				std::lock_guard<std::mutex> lock(m_dListMtx);
+				m_adFrameList.push_back(frame);
+				if (m_adFrameList.size() > maxDecodedListSize 
+					&& m_vdFrameList.size() > maxDecodedListSize)
 				{
 					isBufferFull = true;
 				}
@@ -298,6 +343,20 @@ void Cmp4_playerDlg::PlayerWorker()
 
 bool Cmp4_playerDlg::renderOneAudioFrame(AVFrame* frame)
 {
+	if (frame == NULL)
+	{
+		return false;
+	}
+	if (isTimeToRender(frame->pts))
+	{
+		playAudio(frame);
+		if (m_firstFramePts == 0)
+		{
+			m_firstFramePts = frame->pts;
+			m_firstFrameTick = getTickCount();
+		}
+		return true;
+	}
 	return false;
 }
 
@@ -322,12 +381,17 @@ bool Cmp4_playerDlg::renderOneVideoFrame(AVFrame* frame)
 
 AVFrame* Cmp4_playerDlg::peekOneAudioFrame()
 {
-	return NULL;
+	std::lock_guard<std::mutex> lock(m_dListMtx);
+	if (m_adFrameList.empty())
+	{
+		return NULL;
+	}
+	return m_adFrameList.front();
 }
 
 AVFrame* Cmp4_playerDlg::peekOneVideoFrame()
 {
-	std::lock_guard<std::mutex> lock(m_vdListMtx);
+	std::lock_guard<std::mutex> lock(m_dListMtx);
 	if (m_vdFrameList.empty())
 	{
 		return NULL;
@@ -337,12 +401,18 @@ AVFrame* Cmp4_playerDlg::peekOneVideoFrame()
 
 void Cmp4_playerDlg::popOneAudioFrame()
 {
-	
+	std::lock_guard<std::mutex> lock(m_dListMtx);
+	if (!m_adFrameList.empty())
+	{
+		AVFrame* frame = m_adFrameList.front();
+		av_frame_free(&frame);
+		m_adFrameList.pop_front();
+	}
 }
 
 void Cmp4_playerDlg::popOneVideoFrame()
 {
-	std::lock_guard<std::mutex> lock(m_vdListMtx);
+	std::lock_guard<std::mutex> lock(m_dListMtx);
 	if (!m_vdFrameList.empty())
 	{
 		AVFrame* frame = m_vdFrameList.front();
@@ -394,36 +464,59 @@ void Cmp4_playerDlg::OnBnClickedPlay()
 		return;
 	}
 
-	m_codecCtx = avcodec_alloc_context3(NULL);
-	if (!m_codecCtx)
+	m_vCodecCtx = avcodec_alloc_context3(NULL);
+	m_aCodecCtx = avcodec_alloc_context3(NULL);
+	if (!m_vCodecCtx || !m_aCodecCtx)
 	{
 		MessageBox("avcodec_alloc_context3 failed");
 		return;
 	}
+
+	// 为了简化逻辑，需要同时有音视频，否则接下来的逻辑需要做更多的异常判断
 	m_vstream_index = av_find_best_stream(m_fmtCtx, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
-	if (m_vstream_index < 0)
+	m_astream_index = av_find_best_stream(m_fmtCtx, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
+	if (m_vstream_index < 0 || m_astream_index < 0)
 	{
-		MessageBox("av_find_best_stream failed");
+		MessageBox("Cannot find audio or video index");
 		return;
 	}
-	ret = avcodec_parameters_to_context(m_codecCtx, m_fmtCtx->streams[m_vstream_index]->codecpar);
+	ret = avcodec_parameters_to_context(m_vCodecCtx, m_fmtCtx->streams[m_vstream_index]->codecpar);
 	if (ret < 0)
 	{
-		MessageBox("avcodec_parameters_to_context failed");
+		MessageBox("[video] avcodec_parameters_to_context failed");
 		return;
 	}
-	av_codec_set_pkt_timebase(m_codecCtx, m_fmtCtx->streams[m_vstream_index]->time_base);
-
-	AVCodec *codec = avcodec_find_decoder(m_codecCtx->codec_id);
-	if (codec != NULL)
+	ret = avcodec_parameters_to_context(m_aCodecCtx, m_fmtCtx->streams[m_astream_index]->codecpar);
+	if (ret < 0)
 	{
-		TRACE("codec: %s\n", codec->name);
-		m_codecCtx->codec_id = codec->id;
+		MessageBox("[audio] avcodec_parameters_to_context failed");
+		return;
+	}
+	av_codec_set_pkt_timebase(m_vCodecCtx, m_fmtCtx->streams[m_vstream_index]->time_base);
+	av_codec_set_pkt_timebase(m_aCodecCtx, m_fmtCtx->streams[m_astream_index]->time_base);
+
+	AVCodec *vCodec = avcodec_find_decoder(m_vCodecCtx->codec_id);
+	AVCodec *aCodec = avcodec_find_decoder(m_aCodecCtx->codec_id);
+	if (vCodec != NULL)
+	{
+		TRACE("video codec: %s\n", vCodec->name);
+		m_vCodecCtx->codec_id = vCodec->id;
+	}
+	if (aCodec != NULL)
+	{
+		TRACE("audio codec: %s\n", aCodec->name);
+		m_aCodecCtx->codec_id = aCodec->id;
 	}
 
-	if ((ret = avcodec_open2(m_codecCtx, codec, NULL)) < 0)
+	if ((ret = avcodec_open2(m_vCodecCtx, vCodec, NULL)) < 0)
 	{
-		MessageBox("avcodec_open2 failed");
+		MessageBox("[video] avcodec_open2 failed");
+		return;
+	}
+
+	if ((ret = avcodec_open2(m_aCodecCtx, aCodec, NULL)) < 0)
+	{
+		MessageBox("[audio] avcodec_open2 failed");
 		return;
 	}
 
@@ -463,31 +556,31 @@ void Cmp4_playerDlg::playVideo(AVFrame *frame)
 
 	if (m_picBytes == 0)
 	{
-		m_picBytes = avpicture_get_size(AV_PIX_FMT_BGR24, m_codecCtx->width, m_codecCtx->height);
+		m_picBytes = avpicture_get_size(AV_PIX_FMT_BGR24, m_vCodecCtx->width, m_vCodecCtx->height);
 		m_picBuf = new uint8_t[m_picBytes];
 		m_frameRGB = av_frame_alloc();
 		avpicture_fill((AVPicture *)m_frameRGB, m_picBuf, AV_PIX_FMT_BGR24,
-						m_codecCtx->width, m_codecCtx->height);
+						m_vCodecCtx->width, m_vCodecCtx->height);
 	}
 
 	if (!m_imgCtx)
 	{
-		m_imgCtx = sws_getContext(m_codecCtx->width, m_codecCtx->height, 
-								  m_codecCtx->pix_fmt, m_codecCtx->width, 
-								  m_codecCtx->height, AV_PIX_FMT_BGR24, 
+		m_imgCtx = sws_getContext(m_vCodecCtx->width, m_vCodecCtx->height,
+								  m_vCodecCtx->pix_fmt, m_vCodecCtx->width,
+								  m_vCodecCtx->height, AV_PIX_FMT_BGR24,
 								  SWS_BICUBIC, NULL, NULL, NULL);
 	}
 
-	frame->data[0] += frame->linesize[0] * (m_codecCtx->height - 1);
+	frame->data[0] += frame->linesize[0] * (m_vCodecCtx->height - 1);
 	frame->linesize[0] *= -1;
-	frame->data[1] += frame->linesize[1] * (m_codecCtx->height / 2 - 1);
+	frame->data[1] += frame->linesize[1] * (m_vCodecCtx->height / 2 - 1);
 	frame->linesize[1] *= -1;
-	frame->data[2] += frame->linesize[2] * (m_codecCtx->height / 2 - 1);
+	frame->data[2] += frame->linesize[2] * (m_vCodecCtx->height / 2 - 1);
 	frame->linesize[2] *= -1;
 	sws_scale(m_imgCtx, (const uint8_t* const*)frame->data, frame->linesize,
-			  0, m_codecCtx->height, m_frameRGB->data, m_frameRGB->linesize);
+			  0, m_vCodecCtx->height, m_frameRGB->data, m_frameRGB->linesize);
 
-	displayPicture(m_frameRGB->data[0], m_codecCtx->width, m_codecCtx->height);
+	displayPicture(m_frameRGB->data[0], m_vCodecCtx->width, m_vCodecCtx->height);
 }
 
 void Cmp4_playerDlg::displayPicture(uint8_t* data, int width, int height)
@@ -537,6 +630,108 @@ void Cmp4_playerDlg::getCanvasSize()
 		m_canvasWidth = rc.Width();
 		m_canvasHeight = rc.Height();
 	}
+}
+
+void Cmp4_playerDlg::playAudio(AVFrame *frame)
+{
+	// 重采样
+	initAudioSwr();
+	swr_convert(m_audioSwrCtx, &m_outAudioBuf, 2 * 44100,
+				(const uint8_t **)frame->data, frame->nb_samples);
+	int outSize = av_samples_get_buffer_size(NULL, m_outChannelCount, frame->nb_samples, AV_SAMPLE_FMT_S16, 1);
+	
+	if (!m_firstPlayAudio)
+	{
+		// 初始化wave播放器
+#ifdef USE_WAVE
+		openWavePlayer();
+#else
+		openSdlAudio();
+#endif
+		m_firstPlayAudio = false;
+	}
+
+#ifdef USE_WAVE
+	WAVEHDR wh;
+	wh.lpData = (LPSTR)m_outAudioBuf;
+	wh.dwBufferLength = outSize;
+	wh.dwFlags = 0L;
+	wh.dwLoops = 1L;
+	waveOutPrepareHeader(m_hwo, &wh, sizeof(WAVEHDR));
+	waveOutWrite(m_hwo, &wh, sizeof(WAVEHDR));
+	TRACE("[wave] write one audio frame\n");
+#endif
+}
+
+#ifdef USE_WAVE
+void Cmp4_playerDlg::openWavePlayer()
+{
+	WAVEFORMATEX wfx;
+	wfx.wFormatTag = WAVE_FORMAT_PCM;
+	wfx.nChannels = m_outChannelCount;
+	wfx.nSamplesPerSec = 44100;
+	wfx.nAvgBytesPerSec = 44100 * m_outChannelCount * m_aCodecCtx->bits_per_raw_sample; // ??
+	wfx.nBlockAlign = m_outChannelCount * m_aCodecCtx->bits_per_raw_sample / 8; // ??
+	wfx.wBitsPerSample = m_aCodecCtx->bits_per_raw_sample; // ??
+	wfx.cbSize = 0;
+	waveOutOpen(&m_hwo, WAVE_MAPPER, &wfx, ::GetCurrentThreadId(), 0L, CALLBACK_EVENT);
+}
+
+void Cmp4_playerDlg::closeWavePlayer()
+{
+	waveOutClose(m_hwo);
+}
+#endif
+
+void Cmp4_playerDlg::openSdlAudio()
+{
+	SDL_AudioSpec spec;
+	spec.freq = 44100;
+	spec.format = AUDIO_S16SYS;
+	spec.channels = 2;
+	spec.silence = 0;
+	spec.samples = 1024;
+	spec.callback = fillAudio;
+	spec.userdata = this;
+	if (SDL_OpenAudio(&spec, NULL))
+	{
+		TRACE("Failed to open audio device, %s\n", SDL_GetError());
+	}
+
+	SDL_PauseAudio(0);
+}
+
+void Cmp4_playerDlg::fillAudio(void* udata, Uint8* stream, int len)
+{
+	Cmp4_playerDlg* thiz = (Cmp4_playerDlg*)udata;
+	thiz->innerFillAudio(stream, len);
+}
+
+void Cmp4_playerDlg::innerFillAudio(Uint8* stream, int len)
+{
+	SDL_memset(stream, 0, len);
+}
+
+void Cmp4_playerDlg::initAudioSwr()
+{
+	if (m_audioSwrCtx != NULL)
+	{
+		return;
+	}
+	m_audioSwrCtx = swr_alloc();
+	swr_alloc_set_opts(m_audioSwrCtx, 
+						AV_CH_LAYOUT_STEREO, 
+						AV_SAMPLE_FMT_S16, 
+						44100,
+						m_aCodecCtx->channel_layout, 
+						m_aCodecCtx->sample_fmt, 
+						m_aCodecCtx->sample_rate, 
+						0, 
+						NULL);
+	swr_init(m_audioSwrCtx);
+
+	m_outChannelCount = av_get_channel_layout_nb_channels(AV_CH_LAYOUT_STEREO);
+	m_outAudioBuf = (uint8_t *)av_malloc(2 * 44100);
 }
 
 void Cmp4_playerDlg::OnBnClickedStop()

@@ -8,7 +8,10 @@ extern "C" {
 #include "libavformat/avformat.h"
 #include "libavcodec/avcodec.h"
 #include "libswscale/swscale.h"
+#include "libswresample/swresample.h"
 }
+
+#include "SDL.h"
 
 #include<vfw.h>
 #include<list>
@@ -57,6 +60,18 @@ private:
 	void init_bm_head(int width, int height);
 	void getCanvasSize();
 
+	void playAudio(AVFrame *frame);
+#ifdef USE_WAVE
+	void openWavePlayer();
+	void closeWavePlayer();
+#endif
+	void initAudioSwr();
+	void openSdlAudio();
+
+private:
+	static void fillAudio(void* udata, Uint8* stream, int len);
+	void innerFillAudio(Uint8* stream, int len);
+
 private:
 	static unsigned __stdcall DemuxerProc(void *pVoid);
 	static unsigned __stdcall PlayProc(void *pVoid);
@@ -78,24 +93,39 @@ public:
 	
 private:
 	AVFormatContext *m_fmtCtx;
-	AVCodecContext *m_codecCtx;
+	AVCodecContext *m_vCodecCtx;
+	AVCodecContext *m_aCodecCtx;
 	AVFrame *m_frameRGB;
 
 	int m_picBytes;
 	uint8_t* m_picBuf;
 	struct SwsContext *m_imgCtx;
 
+	int m_outChannelCount;
+	uint8_t* m_outAudioBuf;
+	struct SwrContext *m_audioSwrCtx;
+
 	int m_vstream_index;
 	int m_astream_index;
 
 private: // render
+	// video
 	BITMAPINFO m_bm_info;
 	HDRAWDIB m_DrawDib;
 	int m_canvasWidth;
 	int m_canvasHeight;
 
+	// audio
+	HWAVEOUT m_hwo;
+	WAVEHDR m_wh;
+	bool m_firstPlayAudio;
+
 	std::list<AVFrame*> m_vdFrameList;
-	std::mutex m_vdListMtx;
+	std::list<AVFrame*> m_adFrameList;
+	std::mutex m_dListMtx;
+
+	// std::list<AVFrame*> m_aPendingList;
+	// std::mutex m_apListMtx;
 
 	int64_t m_firstFramePts;
 	int64_t m_firstFrameTick;
