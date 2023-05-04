@@ -169,6 +169,11 @@ static int64_t getTickCount()
 		std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
+static AVRational AvTimeBaseQ() {
+  AVRational ret = { 1, AV_TIME_BASE };
+  return ret;
+}
+
 void Cmp4_playerDlg::initUI()
 {
 	m_strPlayUrl = _T("..\\resource\\big_buck_bunny.mp4");
@@ -234,9 +239,6 @@ void Cmp4_playerDlg::deInitRender()
 	m_firstPlayAudio = true;
 	DrawDibClose(m_DrawDib);
 	SDL_Quit();
-#ifdef USE_WAVE
-	closeWavePlayer();
-#endif
 }
 
 unsigned __stdcall Cmp4_playerDlg::DemuxerProc(void *pVoid)
@@ -265,6 +267,10 @@ void Cmp4_playerDlg::DemuxerWorker()
 		// 视频
 		if (pkt->stream_index == m_vstream_index)
 		{
+      AVStream *pStream = m_fmtCtx->streams[pkt->stream_index];
+      pkt->pts = av_rescale_q(pkt->pts, pStream->time_base, AvTimeBaseQ()) / 1000;
+      pkt->dts = av_rescale_q(pkt->dts, pStream->time_base, AvTimeBaseQ()) / 1000;
+
 			if (avcodec_send_packet(m_vCodecCtx, pkt) == AVERROR(EAGAIN))
 			{
 				TRACE("[video] avcodec_send_packet failed\n");
@@ -273,7 +279,7 @@ void Cmp4_playerDlg::DemuxerWorker()
 			ret = avcodec_receive_frame(m_vCodecCtx, frame);
 			if (ret >= 0)
 			{
-				TRACE("[video] receive one video frame\n");
+			//	TRACE("[video] receive one video frame\n");
 				std::lock_guard<std::mutex> lock(m_dListMtx);
 				m_vdFrameList.push_back(frame);
 				if (m_vdFrameList.size() > maxDecodedListSize 
@@ -297,7 +303,7 @@ void Cmp4_playerDlg::DemuxerWorker()
 			ret = avcodec_receive_frame(m_aCodecCtx, frame);
 			if (ret >= 0)
 			{
-				TRACE("[audio] receive one audio frame\n");
+			//	TRACE("[audio] receive one audio frame\n");
 				std::lock_guard<std::mutex> lock(m_dListMtx);
 				m_adFrameList.push_back(frame);
 				if (m_adFrameList.size() > maxDecodedListSize 
@@ -347,17 +353,9 @@ bool Cmp4_playerDlg::renderOneAudioFrame(AVFrame* frame)
 	{
 		return false;
 	}
-	if (isTimeToRender(frame->pts))
-	{
-		playAudio(frame);
-		if (m_firstFramePts == 0)
-		{
-			m_firstFramePts = frame->pts;
-			m_firstFrameTick = getTickCount();
-		}
-		return true;
-	}
-	return false;
+  // 音频通过SDL拉模式播放，不用做播放控制
+	playAudio(frame);
+	return true;
 }
 
 bool Cmp4_playerDlg::renderOneVideoFrame(AVFrame* frame)
@@ -634,63 +632,45 @@ void Cmp4_playerDlg::getCanvasSize()
 
 void Cmp4_playerDlg::playAudio(AVFrame *frame)
 {
+  if (m_firstPlayAudio)
+  {
+    openSdlAudio(frame->sample_rate, frame->channels, frame->nb_samples);
+    m_firstPlayAudio = false;
+  }
+
 	// 重采样
-	initAudioSwr();
-	swr_convert(m_audioSwrCtx, &m_outAudioBuf, 2 * 44100,
-				(const uint8_t **)frame->data, frame->nb_samples);
-	int outSize = av_samples_get_buffer_size(NULL, m_outChannelCount, frame->nb_samples, AV_SAMPLE_FMT_S16, 1);
-	
-	if (!m_firstPlayAudio)
-	{
-		// 初始化wave播放器
-#ifdef USE_WAVE
-		openWavePlayer();
-#else
-		openSdlAudio();
-#endif
-		m_firstPlayAudio = false;
-	}
+  if (m_audioSwrCtx == NULL)
+  {
+    m_audioSwrCtx = swr_alloc_set_opts(m_audioSwrCtx,
+                                      frame->channel_layout,
+                                      AV_SAMPLE_FMT_S16,
+                                      frame->sample_rate,
+                                      frame->channel_layout,
+                                      (AVSampleFormat)frame->format,
+                                      frame->sample_rate,
+                                      0,
+                                      NULL);
+    swr_init(m_audioSwrCtx);
+  }
 
-#ifdef USE_WAVE
-	WAVEHDR wh;
-	wh.lpData = (LPSTR)m_outAudioBuf;
-	wh.dwBufferLength = outSize;
-	wh.dwFlags = 0L;
-	wh.dwLoops = 1L;
-	waveOutPrepareHeader(m_hwo, &wh, sizeof(WAVEHDR));
-	waveOutWrite(m_hwo, &wh, sizeof(WAVEHDR));
-	TRACE("[wave] write one audio frame\n");
-#endif
+  int dataLen = frame->channels * frame->nb_samples * 2;
+  ARFrame* rframe = new ARFrame(dataLen);
+	swr_convert(m_audioSwrCtx, &rframe->m_data, frame->nb_samples, (const uint8_t **)frame->data, frame->nb_samples);
+  {
+    std::lock_guard<std::mutex> lock(m_apListMtx);
+    m_aPendingList.push_back(rframe);
+    // TRACE("push one audio frame to render list\n");
+  }
 }
 
-#ifdef USE_WAVE
-void Cmp4_playerDlg::openWavePlayer()
-{
-	WAVEFORMATEX wfx;
-	wfx.wFormatTag = WAVE_FORMAT_PCM;
-	wfx.nChannels = m_outChannelCount;
-	wfx.nSamplesPerSec = 44100;
-	wfx.nAvgBytesPerSec = 44100 * m_outChannelCount * m_aCodecCtx->bits_per_raw_sample; // ??
-	wfx.nBlockAlign = m_outChannelCount * m_aCodecCtx->bits_per_raw_sample / 8; // ??
-	wfx.wBitsPerSample = m_aCodecCtx->bits_per_raw_sample; // ??
-	wfx.cbSize = 0;
-	waveOutOpen(&m_hwo, WAVE_MAPPER, &wfx, ::GetCurrentThreadId(), 0L, CALLBACK_EVENT);
-}
-
-void Cmp4_playerDlg::closeWavePlayer()
-{
-	waveOutClose(m_hwo);
-}
-#endif
-
-void Cmp4_playerDlg::openSdlAudio()
+void Cmp4_playerDlg::openSdlAudio(int sampleRate, int channels, int samples)
 {
 	SDL_AudioSpec spec;
-	spec.freq = 44100;
+	spec.freq = sampleRate;
 	spec.format = AUDIO_S16SYS;
-	spec.channels = 2;
+	spec.channels = channels;
 	spec.silence = 0;
-	spec.samples = 1024;
+	spec.samples = samples;
 	spec.callback = fillAudio;
 	spec.userdata = this;
 	if (SDL_OpenAudio(&spec, NULL))
@@ -710,28 +690,19 @@ void Cmp4_playerDlg::fillAudio(void* udata, Uint8* stream, int len)
 void Cmp4_playerDlg::innerFillAudio(Uint8* stream, int len)
 {
 	SDL_memset(stream, 0, len);
-}
-
-void Cmp4_playerDlg::initAudioSwr()
-{
-	if (m_audioSwrCtx != NULL)
-	{
-		return;
-	}
-	m_audioSwrCtx = swr_alloc();
-	swr_alloc_set_opts(m_audioSwrCtx, 
-						AV_CH_LAYOUT_STEREO, 
-						AV_SAMPLE_FMT_S16, 
-						44100,
-						m_aCodecCtx->channel_layout, 
-						m_aCodecCtx->sample_fmt, 
-						m_aCodecCtx->sample_rate, 
-						0, 
-						NULL);
-	swr_init(m_audioSwrCtx);
-
-	m_outChannelCount = av_get_channel_layout_nb_channels(AV_CH_LAYOUT_STEREO);
-	m_outAudioBuf = (uint8_t *)av_malloc(2 * 44100);
+  {
+    std::lock_guard<std::mutex> lock(m_apListMtx);
+    if (m_aPendingList.empty())
+    {
+      // TRACE("audio pull empty\n");
+      return;
+    }
+    ARFrame* rframe = m_aPendingList.front();
+    m_aPendingList.pop_front();
+    int copySize = min(len, (int)rframe->m_length);
+    SDL_MixAudioFormat(stream, rframe->m_data, AUDIO_S16SYS, copySize, 100);
+    // TRACE("fill one audio frame, len %d\n", copySize);
+  }
 }
 
 void Cmp4_playerDlg::OnBnClickedStop()

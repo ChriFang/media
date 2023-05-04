@@ -17,6 +17,28 @@ extern "C" {
 #include<list>
 #include<mutex>
 
+// audio render frame
+struct ARFrame
+{
+  ARFrame(int len)
+  {
+    m_data = new uint8_t[len];
+    m_length = len;
+  }
+
+  ~ARFrame()
+  {
+    if (m_data != NULL)
+    {
+      delete[] m_data;
+      m_length = 0;
+    }
+  }
+
+  uint8_t* m_data;
+  int m_length;
+};
+
 // Cmp4_playerDlg ∂‘ª∞øÚ
 class Cmp4_playerDlg : public CDialogEx
 {
@@ -61,12 +83,7 @@ private:
 	void getCanvasSize();
 
 	void playAudio(AVFrame *frame);
-#ifdef USE_WAVE
-	void openWavePlayer();
-	void closeWavePlayer();
-#endif
-	void initAudioSwr();
-	void openSdlAudio();
+	void openSdlAudio(int sampleRate, int channels, int samples);
 
 private:
 	static void fillAudio(void* udata, Uint8* stream, int len);
@@ -101,8 +118,6 @@ private:
 	uint8_t* m_picBuf;
 	struct SwsContext *m_imgCtx;
 
-	int m_outChannelCount;
-	uint8_t* m_outAudioBuf;
 	struct SwrContext *m_audioSwrCtx;
 
 	int m_vstream_index;
@@ -116,16 +131,14 @@ private: // render
 	int m_canvasHeight;
 
 	// audio
-	HWAVEOUT m_hwo;
-	WAVEHDR m_wh;
 	bool m_firstPlayAudio;
 
 	std::list<AVFrame*> m_vdFrameList;
 	std::list<AVFrame*> m_adFrameList;
 	std::mutex m_dListMtx;
 
-	// std::list<AVFrame*> m_aPendingList;
-	// std::mutex m_apListMtx;
+	std::list<ARFrame*> m_aPendingList; // ¥˝‰÷»æ“Ù∆µ÷°
+	std::mutex m_apListMtx;
 
 	int64_t m_firstFramePts;
 	int64_t m_firstFrameTick;
