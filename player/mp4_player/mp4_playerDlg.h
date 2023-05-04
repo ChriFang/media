@@ -84,6 +84,7 @@ private:
 
 	void playAudio(AVFrame *frame);
 	void openSdlAudio(int sampleRate, int channels, int samples);
+  void closeSdlAudio();
 
 private:
 	static void fillAudio(void* udata, Uint8* stream, int len);
@@ -102,6 +103,7 @@ private:
 	AVFrame* peekOneVideoFrame();
 	void popOneAudioFrame();
 	void popOneVideoFrame();
+  void clearFrameList();
 
 	bool isTimeToRender(int64_t pts);
 
@@ -146,4 +148,7 @@ private: // render
 private: // thread
 	DWORD m_dwDemuxerThread;
 	DWORD m_dwPlayThread;
+  HANDLE m_hThreadEvent[2]; // 0 for demux thread, 1 for play thread
+  bool m_bStopThread;
+  bool m_bPlaying;
 };

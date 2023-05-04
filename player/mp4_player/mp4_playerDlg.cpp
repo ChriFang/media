@@ -53,6 +53,7 @@ Cmp4_playerDlg::Cmp4_playerDlg(CWnd* pParent /*=NULL*/)
 	: CDialogEx(IDD_MP4_PLAYER_DIALOG, pParent)
 	, m_strPlayUrl(_T(""))
 	, m_frameRGB(NULL)
+  , m_picBuf(NULL)
 	, m_imgCtx(NULL)
 	, m_audioSwrCtx(NULL)
 {
@@ -191,7 +192,6 @@ void Cmp4_playerDlg::initDecoder()
 void Cmp4_playerDlg::resetDecoder()
 {
 	m_picBytes = 0;
-	m_picBuf = 0;
 	if (m_imgCtx)
 	{
 		sws_freeContext(m_imgCtx);
@@ -263,6 +263,12 @@ void Cmp4_playerDlg::DemuxerWorker()
 	AVPacket pkt1, *pkt = &pkt1;
 	while (av_read_frame(m_fmtCtx, pkt) >= 0)
 	{
+    if (m_bStopThread)
+    {
+      SetEvent(m_hThreadEvent[0]);
+      break;
+    }
+
 		isBufferFull = false;
 		// 视频
 		if (pkt->stream_index == m_vstream_index)
@@ -279,7 +285,7 @@ void Cmp4_playerDlg::DemuxerWorker()
 			ret = avcodec_receive_frame(m_vCodecCtx, frame);
 			if (ret >= 0)
 			{
-			//	TRACE("[video] receive one video frame\n");
+				TRACE("[video] receive one video frame\n");
 				std::lock_guard<std::mutex> lock(m_dListMtx);
 				m_vdFrameList.push_back(frame);
 				if (m_vdFrameList.size() > maxDecodedListSize 
@@ -303,7 +309,7 @@ void Cmp4_playerDlg::DemuxerWorker()
 			ret = avcodec_receive_frame(m_aCodecCtx, frame);
 			if (ret >= 0)
 			{
-			//	TRACE("[audio] receive one audio frame\n");
+				TRACE("[audio] receive one audio frame\n");
 				std::lock_guard<std::mutex> lock(m_dListMtx);
 				m_adFrameList.push_back(frame);
 				if (m_adFrameList.size() > maxDecodedListSize 
@@ -331,6 +337,12 @@ void Cmp4_playerDlg::PlayerWorker()
 	m_firstFrameTick = 0;
 	while (true)
 	{
+    if (m_bStopThread)
+    {
+      SetEvent(m_hThreadEvent[1]);
+      break;
+    }
+
 		// 获取队列中的第一帧，如果该帧到了播放时机则进行渲染，然后删除队列中的帧
 		// 如果未到播放时机则等下次peek
 		AVFrame* aframe = peekOneAudioFrame();
@@ -417,6 +429,38 @@ void Cmp4_playerDlg::popOneVideoFrame()
 		av_frame_free(&frame);
 		m_vdFrameList.pop_front();
 	}
+}
+
+void Cmp4_playerDlg::clearFrameList()
+{
+  // 清空渲染队列
+  {
+    std::lock_guard<std::mutex> lock(m_dListMtx);
+    while (!m_vdFrameList.empty())
+    {
+      AVFrame* frame = m_vdFrameList.front();
+      av_frame_free(&frame);
+      m_vdFrameList.pop_front();
+    }
+
+    while (!m_adFrameList.empty())
+    {
+      AVFrame* frame = m_adFrameList.front();
+      av_frame_free(&frame);
+      m_adFrameList.pop_front();
+    }
+  }
+
+  // 清空音频pending队列
+  {
+    std::lock_guard<std::mutex> lock(m_apListMtx);
+    while (!m_aPendingList.empty())
+    {
+      ARFrame* frame = m_aPendingList.front();
+      delete frame;
+      m_aPendingList.pop_front();
+    }
+  }
 }
 
 // 播放逻辑控制，按音视频中的pts来播放
@@ -518,6 +562,11 @@ void Cmp4_playerDlg::OnBnClickedPlay()
 		return;
 	}
 
+  m_hThreadEvent[0] = CreateEvent(NULL, TRUE, FALSE, NULL);
+  m_hThreadEvent[1] = CreateEvent(NULL, TRUE, FALSE, NULL);
+  m_bStopThread = false;
+  m_bPlaying = true;
+
 	// 创建解封装和解码线程
 	unsigned int demuxerThreadAddr;
 	m_dwDemuxerThread = _beginthreadex(
@@ -546,6 +595,9 @@ void Cmp4_playerDlg::OnBnClickedPlay()
 	{
 		MessageBox("Could not create play thread");
 	}
+
+  GetDlgItem(IDC_PLAY)->EnableWindow(FALSE);
+  GetDlgItem(IDC_STOP)->EnableWindow(TRUE);
 }
 
 void Cmp4_playerDlg::playVideo(AVFrame *frame)
@@ -681,6 +733,11 @@ void Cmp4_playerDlg::openSdlAudio(int sampleRate, int channels, int samples)
 	SDL_PauseAudio(0);
 }
 
+void Cmp4_playerDlg::closeSdlAudio()
+{
+  SDL_CloseAudio();
+}
+
 void Cmp4_playerDlg::fillAudio(void* udata, Uint8* stream, int len)
 {
 	Cmp4_playerDlg* thiz = (Cmp4_playerDlg*)udata;
@@ -701,18 +758,32 @@ void Cmp4_playerDlg::innerFillAudio(Uint8* stream, int len)
     m_aPendingList.pop_front();
     int copySize = min(len, (int)rframe->m_length);
     SDL_MixAudioFormat(stream, rframe->m_data, AUDIO_S16SYS, copySize, 100);
+    delete rframe;
     // TRACE("fill one audio frame, len %d\n", copySize);
   }
 }
 
 void Cmp4_playerDlg::OnBnClickedStop()
 {
-	
+  if (m_bPlaying)
+  {
+    m_bStopThread = true;
+    WaitForMultipleObjects(2, m_hThreadEvent, TRUE, INFINITE);
+    m_bPlaying = false;
+  }
+  clearFrameList();
+  resetDecoder();
+  closeSdlAudio();
+  m_firstPlayAudio = true;
+
+  GetDlgItem(IDC_PLAY)->EnableWindow(TRUE);
+  GetDlgItem(IDC_STOP)->EnableWindow(FALSE);
 }
 
 
 void Cmp4_playerDlg::OnClose()
 {
+  OnBnClickedStop();
 	deInitRender();
 
 	CDialogEx::OnClose();
