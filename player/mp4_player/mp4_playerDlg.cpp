@@ -273,7 +273,7 @@ void Cmp4_playerDlg::DemuxerWorker()
 		if (pkt->stream_index == m_vstream_index)
 		{
       AVStream *pStream = m_fmtCtx->streams[pkt->stream_index];
-      pkt->pts = av_rescale_q(pkt->pts, pStream->time_base, AvTimeBaseQ()) / 1000;
+      pkt->pts = av_rescale_q(pkt->pts, pStream->time_base, AvTimeBaseQ()) / 1000; // 时间基转换
       pkt->dts = av_rescale_q(pkt->dts, pStream->time_base, AvTimeBaseQ()) / 1000;
 
 			if (avcodec_send_packet(m_vCodecCtx, pkt) == AVERROR(EAGAIN))
