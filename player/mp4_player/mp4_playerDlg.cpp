@@ -265,7 +265,6 @@ void Cmp4_playerDlg::DemuxerWorker()
 	{
     if (m_bStopThread)
     {
-      SetEvent(m_hThreadEvent[0]);
       break;
     }
 
@@ -329,6 +328,9 @@ void Cmp4_playerDlg::DemuxerWorker()
 			Sleep(100);
 		}
 	}
+
+  SetEvent(m_hThreadEvent[0]);
+  m_bDemuxing = false;
 }
 
 void Cmp4_playerDlg::PlayerWorker()
@@ -339,7 +341,6 @@ void Cmp4_playerDlg::PlayerWorker()
 	{
     if (m_bStopThread)
     {
-      SetEvent(m_hThreadEvent[1]);
       break;
     }
 
@@ -357,6 +358,9 @@ void Cmp4_playerDlg::PlayerWorker()
 		}
 		Sleep(10);
 	}
+
+  SetEvent(m_hThreadEvent[1]);
+  m_bPlaying = false;
 }
 
 bool Cmp4_playerDlg::renderOneAudioFrame(AVFrame* frame)
@@ -565,6 +569,7 @@ void Cmp4_playerDlg::OnBnClickedPlay()
   m_hThreadEvent[0] = CreateEvent(NULL, TRUE, FALSE, NULL);
   m_hThreadEvent[1] = CreateEvent(NULL, TRUE, FALSE, NULL);
   m_bStopThread = false;
+  m_bDemuxing = true;
   m_bPlaying = true;
 
 	// 创建解封装和解码线程
@@ -602,8 +607,6 @@ void Cmp4_playerDlg::OnBnClickedPlay()
 
 void Cmp4_playerDlg::playVideo(AVFrame *frame)
 {
-	// getCanvasSize(); // 获取画布的尺寸
-
 	if (m_picBytes == 0)
 	{
 		m_picBytes = avpicture_get_size(AV_PIX_FMT_BGR24, m_vCodecCtx->width, m_vCodecCtx->height);
@@ -646,8 +649,8 @@ void Cmp4_playerDlg::displayPicture(uint8_t* data, int width, int height)
 				hdc,
 				rc.left,
 				rc.top,
-				-1,			// don't stretch
-				-1,
+        rc.Width(),			// 拉伸到和窗口一样的尺寸
+        rc.Height(),
 				&m_bm_info.bmiHeader,
 				(void*)data,
 				0,
@@ -668,18 +671,6 @@ void Cmp4_playerDlg::init_bm_head(int width, int height)
 	m_bm_info.bmiHeader.biSizeImage = 0;
 	m_bm_info.bmiHeader.biClrUsed = 0;
 	m_bm_info.bmiHeader.biClrImportant = 0;
-}
-
-void Cmp4_playerDlg::getCanvasSize()
-{
-	if (m_canvasHeight == 0 || m_canvasWidth == 0)
-	{
-		CRect rc;
-		CWnd* PlayWnd = GetDlgItem(IDC_VIDEO_CANVAS);
-		PlayWnd->GetClientRect(&rc);
-		m_canvasWidth = rc.Width();
-		m_canvasHeight = rc.Height();
-	}
 }
 
 void Cmp4_playerDlg::playAudio(AVFrame *frame)
@@ -765,10 +756,19 @@ void Cmp4_playerDlg::innerFillAudio(Uint8* stream, int len)
 
 void Cmp4_playerDlg::OnBnClickedStop()
 {
+  m_bStopThread = true;
+  if (m_bDemuxing)
+  {
+    WaitForSingleObject(m_hThreadEvent[0], INFINITE);
+    CloseHandle(m_hThreadEvent[0]);
+    m_hThreadEvent[0] = NULL;
+    m_bDemuxing = false;
+  }
   if (m_bPlaying)
   {
-    m_bStopThread = true;
-    WaitForMultipleObjects(2, m_hThreadEvent, TRUE, INFINITE);
+    WaitForSingleObject(m_hThreadEvent[1], INFINITE);
+    CloseHandle(m_hThreadEvent[1]);
+    m_hThreadEvent[1] = NULL;
     m_bPlaying = false;
   }
   clearFrameList();

@@ -80,7 +80,6 @@ private:
 	void playVideo(AVFrame *frame);
 	void displayPicture(uint8_t* data, int width, int height);
 	void init_bm_head(int width, int height);
-	void getCanvasSize();
 
 	void playAudio(AVFrame *frame);
 	void openSdlAudio(int sampleRate, int channels, int samples);
@@ -150,5 +149,6 @@ private: // thread
 	DWORD m_dwPlayThread;
   HANDLE m_hThreadEvent[2]; // 0 for demux thread, 1 for play thread
   bool m_bStopThread;
+  bool m_bDemuxing;
   bool m_bPlaying;
 };
