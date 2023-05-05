@@ -271,13 +271,15 @@ void Cmp4_playerDlg::DemuxerWorker()
     }
 
 		isBufferFull = false;
+
+    // 时间基转换
+    AVStream *pStream = m_fmtCtx->streams[pkt->stream_index];
+    pkt->pts = av_rescale_q(pkt->pts, pStream->time_base, AvTimeBaseQ()) / 1000;
+    pkt->dts = av_rescale_q(pkt->dts, pStream->time_base, AvTimeBaseQ()) / 1000;
+
 		// 视频
 		if (pkt->stream_index == m_vstream_index)
 		{
-      AVStream *pStream = m_fmtCtx->streams[pkt->stream_index];
-      pkt->pts = av_rescale_q(pkt->pts, pStream->time_base, AvTimeBaseQ()) / 1000; // 时间基转换
-      pkt->dts = av_rescale_q(pkt->dts, pStream->time_base, AvTimeBaseQ()) / 1000;
-
 			if (avcodec_send_packet(m_vCodecCtx, pkt) == AVERROR(EAGAIN))
 			{
 				TRACE("[video] avcodec_send_packet failed\n");
@@ -324,6 +326,10 @@ void Cmp4_playerDlg::DemuxerWorker()
 				av_frame_free(&frame);
 			}
 		}
+    else
+    {
+      // subtitle ?
+    }
 
 		if (isBufferFull)
 		{
@@ -371,9 +377,12 @@ bool Cmp4_playerDlg::renderOneAudioFrame(AVFrame* frame)
 	{
 		return false;
 	}
-  // 音频通过SDL拉模式播放，不用做播放控制
-	playAudio(frame);
-	return true;
+  if (isTimeToRender(frame->pts))
+  {
+    playAudio(frame);
+    return true;
+  }
+  return false;
 }
 
 bool Cmp4_playerDlg::renderOneVideoFrame(AVFrame* frame)
