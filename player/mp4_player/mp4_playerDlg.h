@@ -80,6 +80,7 @@ private:
 	void playVideo(AVFrame *frame);
 	void displayPicture(uint8_t* data, int width, int height);
 	void init_bm_head(int width, int height);
+  void updateDisplayRect(int frame_width, int frame_height);
 
 	void playAudio(AVFrame *frame);
 	void openSdlAudio(int sampleRate, int channels, int samples);
@@ -130,6 +131,9 @@ private: // render
 	HDRAWDIB m_DrawDib;
 	int m_canvasWidth;
 	int m_canvasHeight;
+  int m_lastFrameWidth;
+  int m_lastFrameHeight;
+  CRect m_dspRc;
 
 	// audio
 	bool m_firstPlayAudio;
@@ -141,8 +145,8 @@ private: // render
 	std::list<ARFrame*> m_aPendingList; // ¥˝‰÷»æ“Ù∆µ÷°
 	std::mutex m_apListMtx;
 
-	int64_t m_firstFramePts;
-	int64_t m_firstFrameTick;
+  int64_t m_firstFramePts;
+  int64_t m_firstFrameTick;
 
 private: // thread
 	DWORD m_dwDemuxerThread;

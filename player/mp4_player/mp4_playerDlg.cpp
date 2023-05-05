@@ -223,6 +223,8 @@ void Cmp4_playerDlg::initRender()
 {
 	m_canvasWidth = 0;
 	m_canvasHeight = 0;
+  m_lastFrameWidth = 0;
+  m_lastFrameHeight = 0;
 
 	m_firstPlayAudio = true;
 
@@ -638,19 +640,18 @@ void Cmp4_playerDlg::playVideo(AVFrame *frame)
 
 void Cmp4_playerDlg::displayPicture(uint8_t* data, int width, int height)
 {
-	CRect rc;
 	CWnd* PlayWnd = GetDlgItem(IDC_VIDEO_CANVAS);
 	HDC hdc = PlayWnd->GetDC()->GetSafeHdc();
-	PlayWnd->GetClientRect(&rc);
+  updateDisplayRect(width, height);
 
 	init_bm_head(width, height);
 
 	DrawDibDraw(m_DrawDib,
 				hdc,
-				rc.left,
-				rc.top,
-        rc.Width(),			// 拉伸到和窗口一样的尺寸
-        rc.Height(),
+        m_dspRc.left,
+        m_dspRc.top,
+        m_dspRc.Width(),			// 按比例缩放尺寸
+        m_dspRc.Height(),
 				&m_bm_info.bmiHeader,
 				(void*)data,
 				0,
@@ -671,6 +672,42 @@ void Cmp4_playerDlg::init_bm_head(int width, int height)
 	m_bm_info.bmiHeader.biSizeImage = 0;
 	m_bm_info.bmiHeader.biClrUsed = 0;
 	m_bm_info.bmiHeader.biClrImportant = 0;
+}
+
+void Cmp4_playerDlg::updateDisplayRect(int frame_width, int frame_height)
+{
+  CRect canvasRc;
+  GetDlgItem(IDC_VIDEO_CANVAS)->GetClientRect(&canvasRc);
+  if (m_lastFrameWidth == frame_width && m_lastFrameHeight == frame_height
+      && canvasRc.Width() == m_canvasWidth && canvasRc.Height() == m_canvasHeight)
+  {
+    return;
+  }
+  
+  m_lastFrameWidth = frame_width;
+  m_lastFrameHeight = frame_height;
+  m_canvasWidth = canvasRc.Width();
+  m_canvasHeight = canvasRc.Height();
+
+  double screen_ratio = (double)m_canvasWidth / m_canvasHeight;
+  double pixel_ratio = (double)frame_width / frame_height;
+  int dstX, dstY;
+  int dstWidth, dstHeight;
+  if (screen_ratio > pixel_ratio)
+  {
+    dstHeight = m_canvasHeight;
+    dstWidth = (int)(frame_width * ((double)dstHeight / frame_height));
+    dstY = canvasRc.top;
+    dstX = canvasRc.left + (m_canvasWidth - dstWidth) / 2;
+  }
+  else
+  {
+    dstWidth = m_canvasWidth;
+    dstHeight = (int)(frame_height * ((double)dstWidth / frame_width));
+    dstX = canvasRc.left;
+    dstY = canvasRc.top + (m_canvasHeight - dstHeight) / 2;
+  }
+  m_dspRc.SetRect(dstX, dstY, dstX + dstWidth, dstY + dstHeight);
 }
 
 void Cmp4_playerDlg::playAudio(AVFrame *frame)
