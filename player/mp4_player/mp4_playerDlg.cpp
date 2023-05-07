@@ -170,9 +170,10 @@ static int64_t getTickCount()
 		std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
-static AVRational AvTimeBaseQ() {
-  AVRational ret = { 1, AV_TIME_BASE };
-  return ret;
+static AVRational AvTimeBaseQ() 
+{
+	AVRational ret = { 1, AV_TIME_BASE };
+	return ret;
 }
 
 void Cmp4_playerDlg::initUI()
@@ -223,8 +224,8 @@ void Cmp4_playerDlg::initRender()
 {
 	m_canvasWidth = 0;
 	m_canvasHeight = 0;
-  m_lastFrameWidth = 0;
-  m_lastFrameHeight = 0;
+	m_lastFrameWidth = 0;
+	m_lastFrameHeight = 0;
 
 	m_firstPlayAudio = true;
 
@@ -265,17 +266,17 @@ void Cmp4_playerDlg::DemuxerWorker()
 	AVPacket pkt1, *pkt = &pkt1;
 	while (av_read_frame(m_fmtCtx, pkt) >= 0)
 	{
-    if (m_bStopThread)
-    {
-      break;
-    }
+		if (m_bStopThread)
+		{
+			break;
+		}
 
 		isBufferFull = false;
 
-    // 时间基转换
-    AVStream *pStream = m_fmtCtx->streams[pkt->stream_index];
-    pkt->pts = av_rescale_q(pkt->pts, pStream->time_base, AvTimeBaseQ()) / 1000;
-    pkt->dts = av_rescale_q(pkt->dts, pStream->time_base, AvTimeBaseQ()) / 1000;
+		// 时间基转换
+		AVStream *pStream = m_fmtCtx->streams[pkt->stream_index];
+		pkt->pts = av_rescale_q(pkt->pts, pStream->time_base, AvTimeBaseQ()) / 1000;
+		pkt->dts = av_rescale_q(pkt->dts, pStream->time_base, AvTimeBaseQ()) / 1000;
 
 		// 视频
 		if (pkt->stream_index == m_vstream_index)
@@ -326,10 +327,10 @@ void Cmp4_playerDlg::DemuxerWorker()
 				av_frame_free(&frame);
 			}
 		}
-    else
-    {
-      // subtitle ?
-    }
+		else
+		{
+			// subtitle ?
+		}
 
 		if (isBufferFull)
 		{
@@ -337,8 +338,8 @@ void Cmp4_playerDlg::DemuxerWorker()
 		}
 	}
 
-  SetEvent(m_hThreadEvent[0]);
-  m_bDemuxing = false;
+	SetEvent(m_hThreadEvent[0]);
+	m_bDemuxing = false;
 }
 
 void Cmp4_playerDlg::PlayerWorker()
@@ -577,11 +578,11 @@ void Cmp4_playerDlg::OnBnClickedPlay()
 		return;
 	}
 
-  m_hThreadEvent[0] = CreateEvent(NULL, TRUE, FALSE, NULL);
-  m_hThreadEvent[1] = CreateEvent(NULL, TRUE, FALSE, NULL);
-  m_bStopThread = false;
-  m_bDemuxing = true;
-  m_bPlaying = true;
+	m_hThreadEvent[0] = CreateEvent(NULL, TRUE, FALSE, NULL);
+	m_hThreadEvent[1] = CreateEvent(NULL, TRUE, FALSE, NULL);
+	m_bStopThread = false;
+	m_bDemuxing = true;
+	m_bPlaying = true;
 
 	// 创建解封装和解码线程
 	unsigned int demuxerThreadAddr;
@@ -612,8 +613,8 @@ void Cmp4_playerDlg::OnBnClickedPlay()
 		MessageBox("Could not create play thread");
 	}
 
-  GetDlgItem(IDC_PLAY)->EnableWindow(FALSE);
-  GetDlgItem(IDC_STOP)->EnableWindow(TRUE);
+	GetDlgItem(IDC_PLAY)->EnableWindow(FALSE);
+	GetDlgItem(IDC_STOP)->EnableWindow(TRUE);
 }
 
 void Cmp4_playerDlg::playVideo(AVFrame *frame)
@@ -651,7 +652,7 @@ void Cmp4_playerDlg::displayPicture(uint8_t* data, int width, int height)
 {
 	CWnd* PlayWnd = GetDlgItem(IDC_VIDEO_CANVAS);
 	HDC hdc = PlayWnd->GetDC()->GetSafeHdc();
-  updateDisplayRect(width, height);
+	updateDisplayRect(width, height);
 
 	init_bm_head(width, height);
 
@@ -683,40 +684,41 @@ void Cmp4_playerDlg::init_bm_head(int width, int height)
 	m_bm_info.bmiHeader.biClrImportant = 0;
 }
 
+// 根据画布尺寸和视频的分辨率，计算出实际渲染尺寸（按原视频比例缩放）
 void Cmp4_playerDlg::updateDisplayRect(int frame_width, int frame_height)
 {
-  CRect canvasRc;
-  GetDlgItem(IDC_VIDEO_CANVAS)->GetClientRect(&canvasRc);
-  if (m_lastFrameWidth == frame_width && m_lastFrameHeight == frame_height
-      && canvasRc.Width() == m_canvasWidth && canvasRc.Height() == m_canvasHeight)
-  {
-    return;
-  }
+	CRect canvasRc;
+	GetDlgItem(IDC_VIDEO_CANVAS)->GetClientRect(&canvasRc);
+	if (m_lastFrameWidth == frame_width && m_lastFrameHeight == frame_height
+		&& canvasRc.Width() == m_canvasWidth && canvasRc.Height() == m_canvasHeight)
+	{
+		return;
+	}
   
-  m_lastFrameWidth = frame_width;
-  m_lastFrameHeight = frame_height;
-  m_canvasWidth = canvasRc.Width();
-  m_canvasHeight = canvasRc.Height();
+	m_lastFrameWidth = frame_width;
+	m_lastFrameHeight = frame_height;
+	m_canvasWidth = canvasRc.Width();
+	m_canvasHeight = canvasRc.Height();
 
-  double screen_ratio = (double)m_canvasWidth / m_canvasHeight;
-  double pixel_ratio = (double)frame_width / frame_height;
-  int dstX, dstY;
-  int dstWidth, dstHeight;
-  if (screen_ratio > pixel_ratio)
-  {
-    dstHeight = m_canvasHeight;
-    dstWidth = (int)(frame_width * ((double)dstHeight / frame_height));
-    dstY = canvasRc.top;
-    dstX = canvasRc.left + (m_canvasWidth - dstWidth) / 2;
-  }
-  else
-  {
-    dstWidth = m_canvasWidth;
-    dstHeight = (int)(frame_height * ((double)dstWidth / frame_width));
-    dstX = canvasRc.left;
-    dstY = canvasRc.top + (m_canvasHeight - dstHeight) / 2;
-  }
-  m_dspRc.SetRect(dstX, dstY, dstX + dstWidth, dstY + dstHeight);
+	double screen_ratio = (double)m_canvasWidth / m_canvasHeight;
+	double pixel_ratio = (double)frame_width / frame_height;
+	int dstX, dstY;
+	int dstWidth, dstHeight;
+	if (screen_ratio > pixel_ratio)
+	{
+		dstHeight = m_canvasHeight;
+		dstWidth = (int)(frame_width * ((double)dstHeight / frame_height));
+		dstY = canvasRc.top;
+		dstX = canvasRc.left + (m_canvasWidth - dstWidth) / 2;
+	}
+	else
+	{
+		dstWidth = m_canvasWidth;
+		dstHeight = (int)(frame_height * ((double)dstWidth / frame_width));
+		dstX = canvasRc.left;
+		dstY = canvasRc.top + (m_canvasHeight - dstHeight) / 2;
+	}
+	m_dspRc.SetRect(dstX, dstY, dstX + dstWidth, dstY + dstHeight);
 }
 
 void Cmp4_playerDlg::playAudio(AVFrame *frame)
@@ -772,7 +774,7 @@ void Cmp4_playerDlg::openSdlAudio(int sampleRate, int channels, int samples)
 
 void Cmp4_playerDlg::closeSdlAudio()
 {
-  SDL_CloseAudio();
+	SDL_CloseAudio();
 }
 
 void Cmp4_playerDlg::fillAudio(void* udata, Uint8* stream, int len)
@@ -784,52 +786,52 @@ void Cmp4_playerDlg::fillAudio(void* udata, Uint8* stream, int len)
 void Cmp4_playerDlg::innerFillAudio(Uint8* stream, int len)
 {
 	SDL_memset(stream, 0, len);
-  {
-    std::lock_guard<std::mutex> lock(m_apListMtx);
-    if (m_aPendingList.empty())
-    {
-      // TRACE("audio pull empty\n");
-      return;
-    }
-    ARFrame* rframe = m_aPendingList.front();
-    m_aPendingList.pop_front();
-    int copySize = min(len, (int)rframe->m_length);
-    SDL_MixAudioFormat(stream, rframe->m_data, AUDIO_S16SYS, copySize, 100);
-    delete rframe;
-    // TRACE("fill one audio frame, len %d\n", copySize);
-  }
+	{
+		std::lock_guard<std::mutex> lock(m_apListMtx);
+		if (m_aPendingList.empty())
+		{
+			// TRACE("audio pull empty\n");
+			return;
+		}
+		ARFrame* rframe = m_aPendingList.front();
+		m_aPendingList.pop_front();
+		int copySize = min(len, (int)rframe->m_length);
+		SDL_MixAudioFormat(stream, rframe->m_data, AUDIO_S16SYS, copySize, 100);
+		delete rframe;
+		// TRACE("fill one audio frame, len %d\n", copySize);
+	}
 }
 
 void Cmp4_playerDlg::OnBnClickedStop()
 {
-  m_bStopThread = true;
-  if (m_bDemuxing)
-  {
-    WaitForSingleObject(m_hThreadEvent[0], INFINITE);
-    CloseHandle(m_hThreadEvent[0]);
-    m_hThreadEvent[0] = NULL;
-    m_bDemuxing = false;
-  }
-  if (m_bPlaying)
-  {
-    WaitForSingleObject(m_hThreadEvent[1], INFINITE);
-    CloseHandle(m_hThreadEvent[1]);
-    m_hThreadEvent[1] = NULL;
-    m_bPlaying = false;
-  }
-  clearFrameList();
-  resetDecoder();
-  closeSdlAudio();
-  m_firstPlayAudio = true;
+	m_bStopThread = true;
+	if (m_bDemuxing)
+	{
+		WaitForSingleObject(m_hThreadEvent[0], INFINITE);
+		CloseHandle(m_hThreadEvent[0]);
+		m_hThreadEvent[0] = NULL;
+		m_bDemuxing = false;
+	}
+	if (m_bPlaying)
+	{
+		WaitForSingleObject(m_hThreadEvent[1], INFINITE);
+		CloseHandle(m_hThreadEvent[1]);
+		m_hThreadEvent[1] = NULL;
+		m_bPlaying = false;
+	}
+	clearFrameList();
+	resetDecoder();
+	closeSdlAudio();
+	m_firstPlayAudio = true;
 
-  GetDlgItem(IDC_PLAY)->EnableWindow(TRUE);
-  GetDlgItem(IDC_STOP)->EnableWindow(FALSE);
+	GetDlgItem(IDC_PLAY)->EnableWindow(TRUE);
+	GetDlgItem(IDC_STOP)->EnableWindow(FALSE);
 }
 
 
 void Cmp4_playerDlg::OnClose()
 {
-  OnBnClickedStop();
+	OnBnClickedStop();
 	deInitRender();
 
 	CDialogEx::OnClose();
