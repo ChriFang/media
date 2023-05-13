@@ -348,10 +348,10 @@ void Cmp4_playerDlg::PlayerWorker()
 	m_firstFrameTick = 0;
 	while (true)
 	{
-    if (m_bStopThread)
-    {
-      break;
-    }
+		if (m_bStopThread)
+		{
+			break;
+		}
 
 		// 获取队列中的第一帧，如果该帧到了播放时机则进行渲染，然后删除队列中的帧
 		// 如果未到播放时机则等下次peek
@@ -378,12 +378,12 @@ bool Cmp4_playerDlg::renderOneAudioFrame(AVFrame* frame)
 	{
 		return false;
 	}
-  if (isTimeToRender(frame->pts))
-  {
-    playAudio(frame);
-    return true;
-  }
-  return false;
+	if (isTimeToRender(frame->pts))
+	{
+		playAudio(frame);
+		return true;
+	}
+	return false;
 }
 
 bool Cmp4_playerDlg::renderOneVideoFrame(AVFrame* frame)
@@ -658,10 +658,10 @@ void Cmp4_playerDlg::displayPicture(uint8_t* data, int width, int height)
 
 	DrawDibDraw(m_DrawDib,
 				hdc,
-        m_dspRc.left,
-        m_dspRc.top,
-        m_dspRc.Width(),			// 按比例缩放尺寸
-        m_dspRc.Height(),
+				m_dspRc.left,
+				m_dspRc.top,
+				m_dspRc.Width(),			// 按比例缩放尺寸
+				m_dspRc.Height(),
 				&m_bm_info.bmiHeader,
 				(void*)data,
 				0,
