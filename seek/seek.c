@@ -1,80 +1,255 @@
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
-#include <jpeglib.h>
+#include <libswscale/swscale.h>
+#include <libavutil/imgutils.h>
 #include <stdio.h>
 
+uint8_t* rgb_frame_buffer = NULL;
 
-void avframe_to_jpeg(const AVFrame* frame, const char* filename, int quality) {
-  struct jpeg_compress_struct cinfo;
-  struct jpeg_error_mgr jerr;
-  JSAMPROW row_pointer[1];
-  FILE* outfile;
-  int row_stride;
-
-  // 初始化JPEG压缩对象
-  cinfo.err = jpeg_std_error(&jerr);
-  jpeg_create_compress(&cinfo);
-
-  // 打开输出文件
-  if ((outfile = fopen(filename, "wb")) == NULL) {
-      printf("Can't open output file: %s\n", filename);
-      jpeg_destroy_compress(&cinfo);
-      return;
+AVFrame* covertFrameToFormat(enum AVPixelFormat srcFmt, enum AVPixelFormat dstFmt, AVFrame* frame)
+{
+  int ret;
+  uint8_t* buffer = NULL;
+  struct SwsContext* swsContext = NULL;
+  AVFrame* rgbFrame = av_frame_alloc();
+  if (rgbFrame == NULL)
+  {
+    printf("av_frame_alloc failed\n");
+    return NULL;
   }
 
-  jpeg_stdio_dest(&cinfo, outfile);
-
-  // 设置压缩参数
-  cinfo.image_width = frame->width;
-  cinfo.image_height = frame->height;
-  cinfo.input_components = 3;
-  cinfo.in_color_space = JCS_RGB;
-  jpeg_set_defaults(&cinfo);
-  jpeg_set_quality(&cinfo, quality, TRUE);
-
-  // 开始压缩
-  jpeg_start_compress(&cinfo, TRUE);
-
-  row_stride = frame->width * 3;
-  while (cinfo.next_scanline < cinfo.image_height) {
-      row_pointer[0] = (JSAMPROW)&frame->data[0][cinfo.next_scanline * row_stride];
-      jpeg_write_scanlines(&cinfo, row_pointer, 1);
-      printf("write scanline, line %u, image height %u\n", cinfo.next_scanline, cinfo.image_height);
+  if (srcFmt == dstFmt)
+  {
+    ret = av_frame_ref(rgbFrame, frame);
+    if (ret != 0)
+    {
+      printf("av_frame_ref failed, %d", ret);
+      av_frame_free(&rgbFrame);
+      return NULL;
+    }
+  }
+  else
+  {
+    swsContext = sws_getContext(frame->width, frame->height, srcFmt, frame->width, frame->height, dstFmt, 1, NULL, NULL, NULL);
+		if (!swsContext)
+		{
+			printf("sws_getContext fail\n");
+      av_frame_unref(rgbFrame);
+      av_frame_free(&rgbFrame);
+			return NULL;
+		}
+		int bufferSize = av_image_get_buffer_size(dstFmt, frame->width, frame->height, 1) * 2;
+		buffer = (unsigned char*)av_malloc(bufferSize);
+		if (buffer == NULL)
+		{
+			printf("buffer alloc fail:%d\n", bufferSize);
+			av_frame_unref(rgbFrame);
+      av_frame_free(&rgbFrame);
+      return NULL;
+		}
+		av_image_fill_arrays(rgbFrame->data, rgbFrame->linesize, buffer, dstFmt, frame->width, frame->height, 1);
+		if ((ret = sws_scale(swsContext, (const uint8_t* const*)frame->data, frame->linesize, 0, frame->height, rgbFrame->data, rgbFrame->linesize)) < 0)
+		{
+			printf("sws_scale error %d\n", ret);
+      av_frame_unref(rgbFrame);
+      av_frame_free(&rgbFrame);
+      return NULL;
+		}
+		rgbFrame->format = dstFmt;
+		rgbFrame->width = frame->width;
+		rgbFrame->height = frame->height;
   }
 
-  // 完成压缩
-  jpeg_finish_compress(&cinfo);
-  fclose(outfile);
-  jpeg_destroy_compress(&cinfo);
-
-  printf("save to jpeg image file: %s\n", filename);
+  return rgbFrame;
 }
 
-int main() {
+void avframe_to_jpeg_file(AVFrame *frame, AVCodecContext *srcCtx, const char *fileName)
+{
+  if (frame == NULL)
+  {
+    return;
+  }
+
+  // 创建输出上下文
+  AVFormatContext *pFormatCtx = avformat_alloc_context();
+  int ret = avformat_alloc_output_context2(&pFormatCtx, NULL, NULL, fileName);
+  if (ret < 0)
+  {
+    printf("avformat_alloc_output_context2 error\n");
+    return;
+  }
+
+  // 由输出文件jpg格式自动推导编码器类型
+  AVCodecContext *pCodecCtx = avcodec_alloc_context3(NULL);
+  pCodecCtx->codec_id = pFormatCtx->oformat->video_codec;
+  pCodecCtx->codec_type = AVMEDIA_TYPE_VIDEO;
+  pCodecCtx->pix_fmt = AV_PIX_FMT_YUVJ420P;
+  pCodecCtx->width = frame->width;
+  pCodecCtx->height = frame->height;
+  pCodecCtx->time_base = (AVRational){1, 25};
+  pCodecCtx->gop_size = 25;
+  pCodecCtx->max_b_frames = 0;
+  // 重要参数：压缩效果、码率  设置为高质量
+  pCodecCtx->qcompress = 1.0;
+  pCodecCtx->bit_rate = frame->width * frame->height * 3;
+
+  // 寻找并打开编码器
+  AVCodec *pCodec = avcodec_find_encoder(pCodecCtx->codec_id);
+  if (!pCodec)
+  {
+    printf("avcodec_find_encoder() Failed\n");
+    avformat_close_input(&pFormatCtx);
+    avformat_free_context(pFormatCtx);
+    avcodec_free_context(&pCodecCtx);
+    return;
+  }
+  printf("pix fmt: %d, frame fmt %d\n", (int)*pCodec->pix_fmts, frame->format);
+
+  AVFrame *rgbFrame = covertFrameToFormat(frame->format, *pCodec->pix_fmts, frame);
+  if (rgbFrame == NULL)
+  {
+    printf("covert frame Failed\n");
+    avformat_close_input(&pFormatCtx);
+    avformat_free_context(pFormatCtx);
+    avcodec_free_context(&pCodecCtx);
+    return;
+  }
+
+  ret = avcodec_open2(pCodecCtx, pCodec, NULL);
+  if (ret < 0)
+  {
+    printf("avcodec_open2() Failed\n");
+    avformat_close_input(&pFormatCtx);
+    avformat_free_context(pFormatCtx);
+    avcodec_free_context(&pCodecCtx);
+    return;
+  }
+
+  // 进行编码
+  ret = avcodec_send_frame(pCodecCtx, rgbFrame);
+  if (ret < 0)
+  {
+    printf("avcodec_send_frame() Failed\n");
+    avformat_close_input(&pFormatCtx);
+    avformat_free_context(pFormatCtx);
+    avcodec_free_context(&pCodecCtx);
+    return;
+  }
+
+  // 得到编码jpeg数据pkt 由外部使用者释放
+  AVPacket *pkt = av_packet_alloc();
+  ret = avcodec_receive_packet(pCodecCtx, pkt);
+  if (ret < 0)
+  {
+    printf("avcodec_receive_packet() Failed\n");
+    avformat_close_input(&pFormatCtx);
+    avformat_free_context(pFormatCtx);
+    avcodec_free_context(&pCodecCtx);
+    return;
+  }
+
+  // 创建流生成本地jpg文件
+  AVStream *videoStream = avformat_new_stream(pFormatCtx, 0);
+  if (videoStream == NULL)
+  {
+    printf("avformat_new_stream() Failed\n");
+    avcodec_free_context(&pCodecCtx);
+    avformat_close_input(&pFormatCtx);
+    avformat_free_context(pFormatCtx);
+    av_packet_free(&pkt);
+    return;
+  }
+
+  // 写文件头、数据体、文件尾
+  avformat_write_header(pFormatCtx, NULL);
+  av_write_frame(pFormatCtx, pkt);
+  av_write_trailer(pFormatCtx);
+
+  // 释放资源
+  av_frame_unref(rgbFrame);
+  av_frame_free(&rgbFrame);
+  av_packet_free(&pkt);
+  avformat_close_input(&pFormatCtx);
+  avformat_free_context(pFormatCtx);
+  avcodec_free_context(&pCodecCtx);
+  printf("save to file %s success\n", fileName);
+}
+
+AVFrame* covert_frame_to_rgb_frame(AVFrame* frame)
+{
+  int width = frame->width;
+  int height = frame->height;
+  enum AVPixelFormat srcFmt = frame->format;
+  struct SwsContext* swsContext = NULL;
+  AVFrame *pFrameRGB = av_frame_alloc();
+  swsContext = sws_getContext(frame->width, frame->height, srcFmt, frame->width, frame->height,
+                              AV_PIX_FMT_RGB24, SWS_BICUBIC, NULL, NULL, NULL);
+  
+  if (rgb_frame_buffer == NULL)
+  {
+    int numBytes = avpicture_get_size(AV_PIX_FMT_RGB24, frame->width, frame->height);
+    rgb_frame_buffer = (uint8_t *) av_malloc(numBytes * sizeof(uint8_t));
+  }
+  
+  avpicture_fill((AVPicture *)pFrameRGB, rgb_frame_buffer, AV_PIX_FMT_RGB24,
+                 frame->width, frame->height);
+  
+  frame->data[0] += frame->linesize[0] * (height - 1);
+	frame->linesize[0] *= -1;
+	frame->data[1] += frame->linesize[1] * (height / 2 - 1);
+	frame->linesize[1] *= -1;
+	frame->data[2] += frame->linesize[2] * (height / 2 - 1);
+	frame->linesize[2] *= -1;
+	sws_scale(swsContext, (const uint8_t* const*)frame->data, frame->linesize,
+			      0, height, pFrameRGB->data, pFrameRGB->linesize);
+  return pFrameRGB;
+}
+
+// check if frame is valid
+void avframe_to_ppm_file(AVFrame *frame, const char* fileName)
+{
+  //AVFrame *rgbFrame = covert_frame_to_rgb_frame(frame);
+  FILE *ppm_file = fopen(fileName, "wb");
+  fprintf(ppm_file, "P6\n%d %d\n255\n", frame->width, frame->height);
+  for (int y = 0; y < frame->height; y++) {
+      fwrite(frame->data[0] + y * frame->linesize[0], 1, frame->width, ppm_file);
+  }
+  fclose(ppm_file);
+  //av_frame_unref(rgbFrame);
+  //av_frame_free(&rgbFrame);
+}
+
+int main()
+{
   av_register_all();
   avformat_network_init();
   AVFormatContext *fmtCtx = NULL;
   const char *filePath = "oceans.mp4";
-  if (avformat_open_input(&fmtCtx, filePath, NULL, NULL) != 0) {
+  if (avformat_open_input(&fmtCtx, filePath, NULL, NULL) != 0)
+  {
     printf("Could not open file %s\n", filePath);
     return -1;
   }
 
-  if (avformat_find_stream_info(fmtCtx, NULL) < 0) {
+  if (avformat_find_stream_info(fmtCtx, NULL) < 0)
+  {
     printf("Could not find stream information\n");
     avformat_close_input(&fmtCtx);
     return -1;
   }
 
   int videoStreamIndex = -1;
-  for (unsigned int i = 0; i < fmtCtx->nb_streams; ++i) {
-    if (fmtCtx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+  for (unsigned int i = 0; i < fmtCtx->nb_streams; ++i)
+  {
+    if (fmtCtx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
+    {
       videoStreamIndex = i;
       break;
     }
   }
-  
-  if (videoStreamIndex == -1) {
+
+  if (videoStreamIndex == -1)
+  {
     printf("No video stream found\n");
     avformat_close_input(&fmtCtx);
     return -1;
@@ -82,33 +257,38 @@ int main() {
 
   AVCodecContext *codecCtx = avcodec_alloc_context3(NULL);
   if (avcodec_parameters_to_context(
-          codecCtx, fmtCtx->streams[videoStreamIndex]->codecpar) < 0) {
+          codecCtx, fmtCtx->streams[videoStreamIndex]->codecpar) < 0)
+  {
     printf("Could not copy codec parameters to codec context");
     avformat_close_input(&fmtCtx);
     return -1;
   }
 
   AVCodec *codec = avcodec_find_decoder(codecCtx->codec_id);
-  if (codec == NULL) {
+  if (codec == NULL)
+  {
     printf("Could not find decoder\n");
     avformat_close_input(&fmtCtx);
     avcodec_free_context(&codecCtx);
     return -1;
   }
 
-  if (avcodec_open2(codecCtx, codec, NULL) < 0) {
+  if (avcodec_open2(codecCtx, codec, NULL) < 0)
+  {
     printf("Could not open codec");
     avformat_close_input(&fmtCtx);
     avcodec_free_context(&codecCtx);
     return -1;
   }
 
-  double seekTime = 10.0;
-  int64_t seekTarget =
-      (int64_t)(seekTime *
-                av_q2d(fmtCtx->streams[videoStreamIndex]->time_base));
-  if (av_seek_frame(fmtCtx, videoStreamIndex, seekTarget,
-                    AVSEEK_FLAG_BACKWARD) < 0) {
+  int64_t seekTime = 10 * 1000 * 1000;
+  //int64_t seekTarget =
+  //    (int64_t)(seekTime *
+  //              av_q2d(fmtCtx->streams[videoStreamIndex]->time_base));
+  //printf("seek target %ld, time_base %f\n", seekTarget, av_q2d(fmtCtx->streams[videoStreamIndex]->time_base));
+  if (av_seek_frame(fmtCtx, videoStreamIndex, seekTime,
+                    AVSEEK_FLAG_BACKWARD) < 0)
+  {
     printf("Seek operation failed");
     avcodec_close(codecCtx);
     avcodec_free_context(&codecCtx);
@@ -118,23 +298,32 @@ int main() {
 
   AVPacket packet;
   av_init_packet(&packet);
-  while (av_read_frame(fmtCtx, &packet) >= 0) {
-    if (packet.stream_index == videoStreamIndex) {
-      if (packet.flags & AV_PKT_FLAG_KEY) {
+  while (av_read_frame(fmtCtx, &packet) >= 0)
+  {
+    if (packet.stream_index == videoStreamIndex)
+    {
+      if (packet.flags & AV_PKT_FLAG_KEY)
+      {
         printf("Found key frame at seek position\n");
-        if (avcodec_send_packet(codecCtx, &packet) == AVERROR(EAGAIN)) {
+        if (avcodec_send_packet(codecCtx, &packet) == AVERROR(EAGAIN))
+        {
           printf("avcodec_send_packet failed\n");
           break;
         }
         AVFrame *frame = av_frame_alloc();
         int ret = avcodec_receive_frame(codecCtx, frame);
-        if (ret >= 0) {
-          printf("decoded key frame success\n");
-          char jpegFileName[1024] = {0};
-          snprintf(jpegFileName, 1023, "%s-%f.jpg", filePath, seekTime);
-          avframe_to_jpeg(frame, jpegFileName, 90);
+        if (ret >= 0)
+        {
+          printf("decoded key frame success, ret %d\n", ret);
+          avframe_to_ppm_file(frame, "output.ppm");
+          //char jpegFileName[1024] = {0};
+          //snprintf(jpegFileName, 1023, "%s-%ld.jpg", filePath, seekTime);
+          //avframe_to_jpeg_file(frame, codecCtx, jpegFileName);
+          av_frame_unref(frame);
           av_frame_free(&frame);
-        } else {
+        }
+        else
+        {
           printf("decoded key frame failed, ret = %d\n", ret);
         }
         break;

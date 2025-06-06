@@ -1,1 +1,3 @@
 gcc seek.c -o seek -lavformat -lavcodec -lavutil -ljpeg -I ffmpeg/include -I jpeglib/include -L ffmpeg/lib -L jpeglib/lib
+
+gcc seek.c -o seek -lavformat -lavcodec -lavutil -lswscale
