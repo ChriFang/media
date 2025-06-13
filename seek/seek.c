@@ -4,7 +4,8 @@
 #include <libavutil/imgutils.h>
 #include <stdio.h>
 
-uint8_t* rgb_frame_buffer = NULL;
+uint8_t* g_rgb_frame_buffer = NULL;
+uint8_t* g_jpg_frame_buffer = NULL;
 
 AVFrame* covertFrameToFormat(enum AVPixelFormat srcFmt, enum AVPixelFormat dstFmt, AVFrame* frame)
 {
@@ -38,16 +39,21 @@ AVFrame* covertFrameToFormat(enum AVPixelFormat srcFmt, enum AVPixelFormat dstFm
       av_frame_free(&rgbFrame);
 			return NULL;
 		}
-		int bufferSize = av_image_get_buffer_size(dstFmt, frame->width, frame->height, 1) * 2;
-		buffer = (unsigned char*)av_malloc(bufferSize);
-		if (buffer == NULL)
-		{
-			printf("buffer alloc fail:%d\n", bufferSize);
-			av_frame_unref(rgbFrame);
-      av_frame_free(&rgbFrame);
-      return NULL;
-		}
-		av_image_fill_arrays(rgbFrame->data, rgbFrame->linesize, buffer, dstFmt, frame->width, frame->height, 1);
+
+    if (g_jpg_frame_buffer == NULL)
+    {
+      int bufferSize = av_image_get_buffer_size(dstFmt, frame->width, frame->height, 1) * 2;
+      g_jpg_frame_buffer = (unsigned char*)av_malloc(bufferSize);
+      if (g_jpg_frame_buffer == NULL)
+      {
+        printf("buffer alloc fail:%d\n", bufferSize);
+        av_frame_unref(rgbFrame);
+        av_frame_free(&rgbFrame);
+        return NULL;
+      }
+    }
+
+		av_image_fill_arrays(rgbFrame->data, rgbFrame->linesize, g_jpg_frame_buffer, dstFmt, frame->width, frame->height, 1);
 		if ((ret = sws_scale(swsContext, (const uint8_t* const*)frame->data, frame->linesize, 0, frame->height, rgbFrame->data, rgbFrame->linesize)) < 0)
 		{
 			printf("sws_scale error %d\n", ret);
@@ -185,13 +191,13 @@ AVFrame* covert_frame_to_rgb_frame(AVFrame* frame)
   swsContext = sws_getContext(frame->width, frame->height, srcFmt, frame->width, frame->height,
                               AV_PIX_FMT_RGB24, SWS_BICUBIC, NULL, NULL, NULL);
   
-  if (rgb_frame_buffer == NULL)
+  if (g_rgb_frame_buffer == NULL)
   {
     int numBytes = avpicture_get_size(AV_PIX_FMT_RGB24, frame->width, frame->height);
-    rgb_frame_buffer = (uint8_t *) av_malloc(numBytes * sizeof(uint8_t));
+    g_rgb_frame_buffer = (uint8_t *) av_malloc(numBytes * sizeof(uint8_t));
   }
   
-  avpicture_fill((AVPicture *)pFrameRGB, rgb_frame_buffer, AV_PIX_FMT_RGB24,
+  avpicture_fill((AVPicture *)pFrameRGB, g_rgb_frame_buffer, AV_PIX_FMT_RGB24,
                  frame->width, frame->height);
   
   frame->data[0] += frame->linesize[0] * (height - 1);
@@ -208,15 +214,21 @@ AVFrame* covert_frame_to_rgb_frame(AVFrame* frame)
 // check if frame is valid
 void avframe_to_ppm_file(AVFrame *frame, const char* fileName)
 {
-  //AVFrame *rgbFrame = covert_frame_to_rgb_frame(frame);
+  AVFrame *rgbFrame = covert_frame_to_rgb_frame(frame);
   FILE *ppm_file = fopen(fileName, "wb");
-  fprintf(ppm_file, "P6\n%d %d\n255\n", frame->width, frame->height);
-  for (int y = 0; y < frame->height; y++) {
-      fwrite(frame->data[0] + y * frame->linesize[0], 1, frame->width, ppm_file);
+  fprintf(ppm_file, "P6\n%d %d\n255\n", rgbFrame->width, rgbFrame->height);
+  printf("rbg frame linesize[0]: %d\n", rgbFrame->linesize[0]);
+  for (int y = 0; y < rgbFrame->height; y++) {
+      fwrite(rgbFrame->data[0] + y * rgbFrame->linesize[0], 1, rgbFrame->width, ppm_file);
   }
   fclose(ppm_file);
-  //av_frame_unref(rgbFrame);
-  //av_frame_free(&rgbFrame);
+  av_frame_unref(rgbFrame);
+  av_frame_free(&rgbFrame);
+}
+
+int64_t seconds_to_timestamp(int64_t seconds, AVStream *stream) {
+    int64_t timestamp = (int64_t)(seconds * av_q2d(stream->time_base) * INT64_C(1000000)) / 1000000;
+    return timestamp;
 }
 
 int main()
@@ -281,13 +293,11 @@ int main()
     return -1;
   }
 
-  int64_t seekTime = 10 * 1000 * 1000;
-  //int64_t seekTarget =
-  //    (int64_t)(seekTime *
-  //              av_q2d(fmtCtx->streams[videoStreamIndex]->time_base));
-  //printf("seek target %ld, time_base %f\n", seekTarget, av_q2d(fmtCtx->streams[videoStreamIndex]->time_base));
-  if (av_seek_frame(fmtCtx, videoStreamIndex, seekTime,
-                    AVSEEK_FLAG_BACKWARD) < 0)
+  int64_t seekTime = 20; // seconds
+  int64_t seekTarget = seekTime * AV_TIME_BASE;
+  //int64_t seekTarget = seconds_to_timestamp(seekTime, fmtCtx->streams[videoStreamIndex]);
+  //printf("seek target %ld\n", seekTarget);
+  if (av_seek_frame(fmtCtx, -1, seekTarget, AVSEEK_FLAG_BACKWARD) < 0)
   {
     printf("Seek operation failed");
     avcodec_close(codecCtx);
@@ -302,9 +312,10 @@ int main()
   {
     if (packet.stream_index == videoStreamIndex)
     {
+      printf("read frame, pts %ld\n", packet.pts);
       if (packet.flags & AV_PKT_FLAG_KEY)
       {
-        printf("Found key frame at seek position\n");
+        printf("Found key frame at seek position, pts %ld\n", packet.pts);
         if (avcodec_send_packet(codecCtx, &packet) == AVERROR(EAGAIN))
         {
           printf("avcodec_send_packet failed\n");
@@ -316,9 +327,9 @@ int main()
         {
           printf("decoded key frame success, ret %d\n", ret);
           avframe_to_ppm_file(frame, "output.ppm");
-          //char jpegFileName[1024] = {0};
-          //snprintf(jpegFileName, 1023, "%s-%ld.jpg", filePath, seekTime);
-          //avframe_to_jpeg_file(frame, codecCtx, jpegFileName);
+          char jpegFileName[1024] = {0};
+          snprintf(jpegFileName, 1023, "%s-%ld.jpg", filePath, seekTime);
+          avframe_to_jpeg_file(frame, codecCtx, jpegFileName);
           av_frame_unref(frame);
           av_frame_free(&frame);
         }
@@ -333,6 +344,17 @@ int main()
   }
 
   av_packet_unref(&packet);
+  if (g_jpg_frame_buffer != NULL)
+  {
+    av_free(g_jpg_frame_buffer);
+    g_jpg_frame_buffer = NULL;
+  }
+  if (g_rgb_frame_buffer != NULL)
+  {
+    av_free(g_rgb_frame_buffer);
+    g_rgb_frame_buffer = NULL;
+  }
+
   avcodec_close(codecCtx);
   avcodec_free_context(&codecCtx);
   avformat_close_input(&fmtCtx);
