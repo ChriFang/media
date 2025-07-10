@@ -182,10 +182,21 @@ void Cmp4_playerDlg::initUI()
 	UpdateData(FALSE);
 }
 
+static void log_callback_null(void *ptr, int level, const char *fmt, va_list vl) {
+	int print_prefix = 1;
+	char line[1024];
+
+	av_log_format_line(ptr, level, fmt, vl, line, sizeof(line), &print_prefix);
+	TRACE("ffmpeg-log, %s\n", line);
+}
+
 void Cmp4_playerDlg::initDecoder()
 {
 	avcodec_register_all();
 	av_register_all();
+	
+	av_log_set_level(AV_LOG_TRACE);
+	av_log_set_callback(log_callback_null);
 
 	resetDecoder();
 }
